@@ -126,9 +126,13 @@ def main():
     config_parser.add_argument("-p", "--port", dest = "set_port", type = int, help = "Set listening port for peer communication")
     config_parser.set_defaults(func = cmd_config)
 
-    #start command parser
+    #status command parser
     status_parser = subparsers.add_parser("status", help = "Show current status of daemon and configuration.")
     status_parser.set_defaults(func = cmd_config)
+
+    #start parser
+    start_parser = subparsers.add_parser("start", help = "Start backround sync")
+    start_parser.set_defaults(func = cmd_start)
 
     #stop command parser
     stop_parser = subparsers.add_parser("stop", help = "Stop running Clipper daemon")
