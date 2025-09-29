@@ -1,7 +1,7 @@
 import socket
 import sys
 
-def sent_data(ip_address: str, port:int, clipboard_data:str) -> bool:
+def send_data(ip_address: str, port:int, clipboard_data:str) -> bool:
     #Attempts to send clipboard data to a peer over a single TCP connection
     try:
         #encode string data to bytes
@@ -29,7 +29,7 @@ def start_listener(ip:str, port:int, max_connections: int = 1) -> socket.socket 
     #non-blocking TCP socket to listen for incoming connections
     try:
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) #immediate resuse
+        listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) #immediate resuse
         listener.setblocking(False)
         listener.bind((ip,port))
         listener.listen(max_connections)

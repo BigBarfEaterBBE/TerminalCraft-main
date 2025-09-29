@@ -4,6 +4,7 @@ import os
 import time
 import pyperclip
 import importlib.util
+import socket
 
 # import config manager
 try:
@@ -21,6 +22,17 @@ try:
     #import config_manager.py
 except ImportError:
     print("config_manager.py not found. Make sure it is in the same directory.")
+    sys.exit(1)
+
+
+#import network manager
+try:
+    network_path = os.path.join(os.getcwd(), 'network_manager.py')
+    spec = importlib.util.spec_from_file_location("network_manager", network_path)
+    network_manager = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(network_manager)
+except ImportError:
+    print("network_manager.py not found. Make sure it is in the same directory.")
     sys.exit(1)
 
 def cmd_config(args):
@@ -48,19 +60,39 @@ def cmd_config(args):
         except ValueError:
             print("Port must be a valid number.")
             return
+        
+    if args.set_peers:
+        new_peers = [ip.strip() for ip in args.set_peers.split('.') if ip.strip()]
+        if new_peers:
+            config['peer_ips'] = new_peers
+            print(f"Peer IP list updated. Now synchronizing with {len(new_peers)} peers.")
+        else:
+            print("Peer IP list is empty. Peers were not updated")
+    if args.set_key is not None or args.set_port is not None or args.set_peers is not None:
+        config_manager.save_config(config)
     
     #display current config
     config = config_manager.load_config() #reload
     secret_display = config["secret_key"][:4] + "..." + config["secret_key"][-4:] if config["secret_key"] else "NOT SET"
+    peer_list_display = ', '.join(config['peer_ips']) if config['peer_ips'] else 'None configured'
     print("\nCURRENT SETTINGS")
     print(f"    Secret Key (PSK): {secret_display}")
     print(f"    Listen Port:      {config["listen_port"]}")
+    print(f"    Peer IPs:         {peer_list_display}")
+    print(f"    Config File:      {config_manager.CONFIG_FILE}")
     print("\nUse 'python.clipper.py config --key <SECRET>' and 'python clipper.py config --port <PORT>' to set them")
 
 def run_daemon_loop(config):
     if not config["secret_key"]:
         print("Secret key is not configured. Run 'clipper config --key <SECRET>' first.")
         sys.exit(1)
+
+    listen_port = config['listen_port']
+    listener_socket = network_manager.start_listener('0.0.0.0', listen_port)
+    if listener_socket is None:
+        return
+    
+
     print(f"Clipper daemon starting on port {config["listen_port"]}...")
     print(f"Authentication Key: ***{config["secret_key"][-4:]}")
     print(f"Currently running in foreground for testing")
@@ -80,14 +112,32 @@ def run_daemon_loop(config):
             #SYNCHRONIZATION LOGIC:
             if new_content and new_content != current_clipboard and new_content != last_synced_content:
                 print(f"\n[LOCAL CHANGE]: copy detected '{new_content[:50]}{"..." if len(new_content) > 50 else ""}'")
-                print("[NETWORK]: sending data to known peers...")
 
-                #on sucess transmit cache
-                config_manager.update_last_synced_content(new_content)
-                last_synced_content = new_content
-            #2 TODO: NETWORK LISTENING (SERVER SIDE)
+                for peer_ip in config['peer_ips']:
+                    success = network_manager.send_data(
+                        ip_address=peer_ip,
+                        port=listen_port,
+                        clipboard_data = new_content
+                    )
+
+                    if success:
+                        print(f"[NETWORK]: Data sent to {peer_ip}:{listen_port}")
+                        config_manager.update_last_synced_content(new_content)
+                        last_synced_content = new_content
+                        break
+                    else:
+                        print(f"[NEWTORK]: Failed to send data to {peer_ip}:{listen_port}")
+            
+            received_content = network_manager.receive_data(listener_socket)
+            if received_content is not None and received_content != last_synced_content:
+                print(f"[NETWORK]: Incoming data received: '{received_content[:50]}{'...' if len(received_content) > 50 else ''}'")
+                pyperclip.copy(received_content)
+                config_manager.update_last_synced_content(received_content)
+                last_synced_content = received_content
+                current_clipboard = received_content
+
             current_clipboard = new_content
-            time.sleep(1)
+            time.sleep(0.1)
         except KeyboardInterrupt:
             print("\n Clipper daemon shutting down")
             break
@@ -124,6 +174,7 @@ def main():
     config_parser = subparsers.add_parser("config", help = "Configure application settings (PSK, port)")
     config_parser.add_argument("-k", "--key", dest="set_key", type = str, help = "Set pre-shared secret key (PSK) for authentication (min 16 chars)")
     config_parser.add_argument("-p", "--port", dest = "set_port", type = int, help = "Set listening port for peer communication")
+    config_parser.add_argument("-r", "--peers", dest = "set_peers", type = str, help = "Comma-separated list of peer IP adresses to send  clipboard content to e.g.(192.168.1.5,10.0.0.2)")
     config_parser.set_defaults(func = cmd_config)
 
     #status command parser

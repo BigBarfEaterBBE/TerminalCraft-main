@@ -19,25 +19,23 @@ def get_config_dir():
     return path
 #golbals
 CONFIG_FILE = get_config_dir() /"config.json"
-DEFAULT_CONFIG = {
-    "secret_key": None,
-    "listen_port": 55555,
-    #prevent sync loop
-    "last_synced_content": ""
-}
+
 
 def load_config():
-    #loads configuration from file or returns default if not found
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r") as f:
-                #merge default with config
-                loaded = json.load(f)
-                return {**DEFAULT_CONFIG, **loaded}
-        except (json.JSONDecodeError, IOError):
-            print(f"Could not read or decode file at {CONFIG_FILE}. Using defaults")
-            return DEFAULT_CONFIG
-    return DEFAULT_CONFIG
+    try:
+        with open(CONFIG_FILE, 'r') as f:
+            config = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        config = {
+            "secret_key": None,
+            "listen_port": 55555,
+            #prevent sync loop
+            "last_synced_content": "",
+            "peer_ips": ["127.0.0.1"]
+        }
+    if "peer_ips" not in config:
+        config["peer_ips"] = ["127.0.0.1"]
+    return config
 
 def save_config(config):
     #saves current configration to file
