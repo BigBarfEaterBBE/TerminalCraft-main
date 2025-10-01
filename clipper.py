@@ -4,9 +4,11 @@ import os
 import time
 import pyperclip
 import importlib.util
-import socket
+import logging
+from subprocess import Popen, DEVNULL
 
 PID_FILE = '.clipper.pid'
+LOG_FILE = 'clipper.log'
 # import config manager
 try:
     # 1. Get the absolute path to the file we know exists
@@ -35,6 +37,26 @@ try:
 except ImportError:
     print("network_manager.py not found. Make sure it is in the same directory.")
     sys.exit(1)
+
+
+#setup logging
+def setup_daemon_logging():
+    if logging.getLogger().hasHandlers():
+        logging.getLogger().handlers.clear()
+
+    logging.basicConfig(
+        filename=LOG_FILE,
+        level=logging.INFO,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter('%(message)s'))
+    logging.getLogger().addHandler(console_handler)
+
+
 
 def cmd_config(args):
     #handles config command to set secret key + port
@@ -85,8 +107,9 @@ def cmd_config(args):
 
 def run_daemon_loop(config):
     if not config["secret_key"]:
-        print("Secret key is not configured. Run 'clipper config --key <SECRET>' first.")
-        sys.exit(1)
+        logging.error("Secret key is not configured. Run 'clipper config --key <SECRET>' first.")
+        return
+    
 
     listen_port = config['listen_port']
     listener_socket = network_manager.start_listener('0.0.0.0', listen_port)
@@ -94,9 +117,10 @@ def run_daemon_loop(config):
         return
     
 
-    print(f"Clipper daemon starting on port {config["listen_port"]}...")
-    print(f"Authentication Key: ***{config["secret_key"][-4:]}")
-    print(f"Currently running in foreground for testing")
+    logging.info(f"Clipper daemon starting on port {config["listen_port"]}...")
+    logging.info(f"Authentication Key: ***{config["secret_key"][-4:]}")
+    logging.info(f"Currently running in foreground for testing")
+
     current_clipboard = ""
     last_synced_content = config.get("last_synced_content", "")
     while True:
@@ -107,12 +131,12 @@ def run_daemon_loop(config):
                 new_content = pyperclip.paste()
             except pyperclip.PyperclipException as e:
                 #case where clipboard is inaccessible
-                print(f"Could not access clipboard. {e}")
+                logging.warning(f"Could not access clipboard. {e}")
                 new_content = current_clipboard
             
             #SYNCHRONIZATION LOGIC:
             if new_content and new_content != current_clipboard and new_content != last_synced_content:
-                print(f"\n[LOCAL CHANGE]: copy detected '{new_content[:50]}{"..." if len(new_content) > 50 else ""}'")
+                logging.info(f"\n[LOCAL CHANGE]: copy detected '{new_content[:50]}{"..." if len(new_content) > 50 else ""}'")
 
                 for peer_ip in config['peer_ips']:
                     success = network_manager.send_data(
@@ -122,16 +146,16 @@ def run_daemon_loop(config):
                     )
 
                     if success:
-                        print(f"[NETWORK]: Data sent to {peer_ip}:{listen_port}")
+                        logging.info(f"[NETWORK]: Data sent to {peer_ip}:{listen_port}")
                         config_manager.update_last_synced_content(new_content)
                         last_synced_content = new_content
                         break
                     else:
-                        print(f"[NEWTORK]: Failed to send data to {peer_ip}:{listen_port}")
+                        logging.warning(f"[NEWTORK]: Failed to send data to {peer_ip}:{listen_port}")
             
             received_content = network_manager.receive_data(listener_socket)
             if received_content is not None and received_content != last_synced_content:
-                print(f"[NETWORK]: Incoming data received: '{received_content[:50]}{'...' if len(received_content) > 50 else ''}'")
+                logging.info(f"[NETWORK]: Incoming data received: '{received_content[:50]}{'...' if len(received_content) > 50 else ''}'")
                 pyperclip.copy(received_content)
                 config_manager.update_last_synced_content(received_content)
                 last_synced_content = received_content
@@ -140,10 +164,10 @@ def run_daemon_loop(config):
             current_clipboard = new_content
             time.sleep(0.1)
         except KeyboardInterrupt:
-            print("\n Clipper daemon shutting down")
+            logging.info("\n Clipper daemon shutting down")
             break
         except Exception as e:
-            print(f"Unexpected error: {e}. Retrying in 5secs.")
+            logging.error(f"Unexpected error: {e}. Retrying in 5secs.")
             time.sleep(5)
 
 def cmd_start(args):
@@ -153,6 +177,24 @@ def cmd_start(args):
         print(f"Already running with PID: {pid}. Use clipper.py to stop")
         return
 
+    if not args._daemon_child:
+        command = [sys.executable, sys.argv[0], 'start', '--_daemon_child'] #adds internal flag
+        try:
+            #use Popen to start child process
+            #DEVNULL to silene the child's cries in the terminal
+            Popen(command,
+                  stdout = DEVNULL,
+                  stderr = DEVNULL,
+                  stdin = DEVNULL,
+                  close_fds=True
+                )
+            print(f"✅ ClipBridge Daemon launched in the background.")
+            print("Use 'python clipper.py status' to check its state and 'python clipper.py stop' to terminate it.")
+            return
+        except Exception as e:
+            print(f"Failed to launch daemon process in bg: {e}")
+            return
+    
     config = config_manager.load_config()
     print("Starting Clipper...(currently running in foreground for dev)")
     pid = os.getpid()
@@ -167,6 +209,7 @@ def cmd_start(args):
         if os.path.exists(PID_FILE):
             os.remove(PID_FILE)
             print(f"PID file {PID_FILE} cleaned up.")
+
 
 def cmd_status(args):
     #handles status cmd
@@ -211,9 +254,9 @@ def main():
 
     #Config command parser
     config_parser = subparsers.add_parser("config", help = "Configure application settings (PSK, port)")
-    config_parser.add_argument("-k", "--key", dest="set_key", type = str, help = "Set pre-shared secret key (PSK) for authentication (min 16 chars)")
-    config_parser.add_argument("-p", "--port", dest = "set_port", type = int, help = "Set listening port for peer communication")
-    config_parser.add_argument("-r", "--peers", dest = "set_peers", type = str, help = "Comma-separated list of peer IP adresses to send  clipboard content to e.g.(192.168.1.5,10.0.0.2)")
+    config_parser.add_argument("-k", "--key", dest="set_key", type = str, default = None, help = "Set pre-shared secret key (PSK) for authentication (min 16 chars)")
+    config_parser.add_argument("-p", "--port", dest = "set_port", type = int, default = None, help = "Set listening port for peer communication")
+    config_parser.add_argument("-r", "--peers", dest = "set_peers", type = str, default = None, help = "Comma-separated list of peer IP adresses to send  clipboard content to e.g.(192.168.1.5,10.0.0.2)")
     config_parser.set_defaults(func = cmd_config)
 
     #status command parser
@@ -222,6 +265,7 @@ def main():
 
     #start parser
     start_parser = subparsers.add_parser("start", help = "Start backround sync")
+    start_parser.add_argument('--_daemon_child', action='store_true', help = argparse.SUPPRESS)
     start_parser.set_defaults(func = cmd_start)
 
     #stop command parser
