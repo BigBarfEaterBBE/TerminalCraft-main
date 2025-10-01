@@ -6,6 +6,7 @@ import pyperclip
 import importlib.util
 import socket
 
+PID_FILE = '.clipper.pid'
 # import config manager
 try:
     # 1. Get the absolute path to the file we know exists
@@ -146,9 +147,26 @@ def run_daemon_loop(config):
             time.sleep(5)
 
 def cmd_start(args):
+    if os.path.exists(PID_FILE):
+        with open(PID_FILE, 'r') as f:
+            pid = f.read().strip()
+        print(f"Already running with PID: {pid}. Use clipper.py to stop")
+        return
+
     config = config_manager.load_config()
     print("Starting Clipper...(currently running in foreground for dev)")
-    run_daemon_loop(config)
+    pid = os.getpid()
+    try:
+        with open(PID_FILE, 'w') as f:
+            f.write(str(pid))
+        print(f"PID file created at {PID_FILE} (PID: {pid})")
+        run_daemon_loop(config)
+    except Exception as e:
+        print(f"An unexpected error happened during daemon startup: {e}")
+    finally:
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+            print(f"PID file {PID_FILE} cleaned up.")
 
 def cmd_status(args):
     #handles status cmd
@@ -159,6 +177,27 @@ def cmd_status(args):
     print(f"Config port:    {config["listen_port"]}")
     print(f"Secret Key Set: {'Yes' if config["secret_key"] else 'No'}")
     print("-------------------------\n")
+
+def cmd_stop(args):
+    if not os.path.exists(PID_FILE):
+        print("Daemon is not running (PID file not found)")
+        return
+    try:
+        with open(PID_FILE, 'r') as f:
+            pid = int(f.read().strip())
+        os.kill(pid,15)
+        time.sleep(1)
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+            print(f"Successfully sent termination signal to PID {pid}. Forced PID file cleanup.")
+        else:
+            print(f"Daemon stopped")
+    except ProcessLookupError:
+        print(f"Daemon process (PID {pid}) not found.")
+        os.remove(PID_FILE)
+        print(f"Cleaned up PID file: {PID_FILE}")
+    except Exception as e:
+        print(f"Error stopping daemon: {e}")
 
 def main():
     #entry point for CLI
@@ -187,7 +226,7 @@ def main():
 
     #stop command parser
     stop_parser = subparsers.add_parser("stop", help = "Stop running Clipper daemon")
-    stop_parser.set_defaults(func = lambda args: print("Stop command logic will be added after daemonization logic is added. Press ctrl+c for now"))
+    stop_parser.set_defaults(func = cmd_stop)
 
     #parse arguments and run function associated with command
     args = parser.parse_args()
