@@ -7,6 +7,8 @@ import importlib.util
 import logging
 from subprocess import Popen, DEVNULL
 
+# add cmd to show current clipboard
+
 PID_FILE = '.clipper.pid'
 LOG_FILE = 'clipper.log'
 # import config manager
@@ -59,51 +61,56 @@ def setup_daemon_logging():
 
 
 def cmd_config(args):
-    #handles config command to set secret key + port
+    """Handles the 'config' command to set the secret key, port, and peer list."""
     config = config_manager.load_config()
-    print("\n Clipper Configuration")
-    print(f"Configuration file location: {config_manager.CONFIG_FILE}")
-
-    if args.set_key:
-        key = args.set_key.strip()
-        if len(key) < 16:
-            print("Key should be atlast 16 characters")
-            return
-        if config_manager.set_secret_key(key):
-            print("Secret key set successfully.")
     
-    if args.set_port:
-        try:
-            port = int(args.set_port)
-            if 1024 <= port <= 65535:
-                if config_manager.set_listen_port(port):
-                    print(f"Listening port set to {port}")
-            else:
-                print("Port number must be between 1024 and 65535")
-        except ValueError:
-            print("Port must be a valid number.")
-            return
-        
-    if args.set_peers:
-        new_peers = [ip.strip() for ip in args.set_peers.split('.') if ip.strip()]
+    set_port = getattr(args, 'set_port', None)
+    set_key = getattr(args, 'set_key', None)
+    set_peers = getattr(args, 'set_peers', None)
+
+    if set_port is not None:
+        if 1024 <= set_port <= 65535:
+            config['listen_port'] = set_port
+            print(f"✅ Listen port set to {set_port}.")
+        else:
+            print("❌ Invalid port. Must be between 1024 and 65535.")
+
+    if set_key:
+        key = set_key.strip()
+        if len(key) >= 5: 
+            config['secret_key'] = key
+            print("✅ Secret key updated successfully.")
+        else:
+            print("❌ Secret key must be at least 5 characters long. Security is still advised even without encryption.")
+
+    if set_peers:
+        new_peers = [ip.strip() for ip in set_peers.split(',') if ip.strip()]
         if new_peers:
             config['peer_ips'] = new_peers
-            print(f"Peer IP list updated. Now synchronizing with {len(new_peers)} peers.")
+            print(f"✅ Peer IP list updated. Now synchronizing with {len(new_peers)} peers.")
         else:
-            print("Peer IP list is empty. Peers were not updated")
-    if args.set_key is not None or args.set_port is not None or args.set_peers is not None:
+            print("❌ Peer IP list empty. Peers were not updated.")
+
+
+    if set_key is not None or set_port is not None or set_peers is not None:
         config_manager.save_config(config)
+
+    # Display current configuration
+    config = config_manager.load_config() # Reload after potential save
     
-    #display current config
-    config = config_manager.load_config() #reload
-    secret_display = config["secret_key"][:4] + "..." + config["secret_key"][-4:] if config["secret_key"] else "NOT SET"
+    if config['secret_key']:
+        secret_display = config['secret_key'][:1] + '...' + config['secret_key'][-1:]
+    else:
+        secret_display = "❌ NOT SET"
+    # ----------------------------------------------------------------
+
     peer_list_display = ', '.join(config['peer_ips']) if config['peer_ips'] else 'None configured'
-    print("\nCURRENT SETTINGS")
-    print(f"    Secret Key (PSK): {secret_display}")
-    print(f"    Listen Port:      {config["listen_port"]}")
-    print(f"    Peer IPs:         {peer_list_display}")
-    print(f"    Config File:      {config_manager.CONFIG_FILE}")
-    print("\nUse 'python.clipper.py config --key <SECRET>' and 'python clipper.py config --port <PORT>' to set them")
+    
+    print("\n[CURRENT CONFIGURATION]")
+    print(f"Secret Key (PSK): {secret_display}")
+    print(f"Listen Port: {config['listen_port']}")
+    print(f"Peer IPs: {peer_list_display}")
+    print(f"Config File: {config_manager.CONFIG_FILE}")
 
 def run_daemon_loop(config):
     if not config["secret_key"]:
@@ -177,7 +184,7 @@ def cmd_start(args):
         print(f"Already running with PID: {pid}. Use clipper.py to stop")
         return
 
-    if not args._daemon_child:
+    if not getattr(args, '_daemon_child', False):
         command = [sys.executable, sys.argv[0], 'start', '--_daemon_child'] #adds internal flag
         try:
             #use Popen to start child process
