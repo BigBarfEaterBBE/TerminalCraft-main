@@ -112,6 +112,21 @@ def cmd_config(args):
     print(f"Peer IPs: {peer_list_display}")
     print(f"Config File: {config_manager.CONFIG_FILE}")
 
+def cmd_clipboard(args):
+    try:
+        content = pyperclip.paste()
+        if content:
+            print("\n[CURRENT CLIPBOARD CONTENT]")
+            print("-" * 30)
+            # use repr() to show invisible chars
+            print(repr(content)[1:-1])
+            print("-"*30)
+        else:
+            print("Clipboard is currently empty or contains non-text data.")
+    except pyperclip.PyperclipException as e:
+        print(f"Error accessing clipboard: {e}.")
+
+
 def run_daemon_loop(config):
     if not config["secret_key"]:
         logging.error("Secret key is not configured. Run 'clipper config --key <SECRET>' first.")
@@ -258,6 +273,10 @@ def main():
 
     #subparsers for commands
     subparsers = parser.add_subparsers(dest="command", required = True)
+
+    #clipboard parser
+    clipboard_parser = subparsers.add_parser("clipboard", help = "Displays current content of local OS clipboard.")
+    clipboard_parser.set_defaults(func=cmd_clipboard)
 
     #Config command parser
     config_parser = subparsers.add_parser("config", help = "Configure application settings (PSK, port)")
