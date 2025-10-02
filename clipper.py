@@ -11,6 +11,10 @@ from subprocess import Popen, DEVNULL
 
 PID_FILE = '.clipper.pid'
 LOG_FILE = 'clipper.log'
+
+if os.getcwd() != sys.path[0]:
+    sys.path.insert(0,os.getcwd())
+
 # import config manager
 try:
     # 1. Get the absolute path to the file we know exists
@@ -40,6 +44,15 @@ except ImportError:
     print("network_manager.py not found. Make sure it is in the same directory.")
     sys.exit(1)
 
+#import history_manager
+try:
+    history_path = os.path.join(os.getcwd(), 'history_manager.py')
+    hist_spec = importlib.util.spec_from_file_location("history_manager", history_path)
+    history_manager = importlib.util.module_from_spec(hist_spec)
+    hist_spec.loader.exec_module(history_manager)
+except Exception as e:
+    print(f"Failed to load history_manager.py. Reason: {e}")
+    sys.exit(1)
 
 #setup logging
 def setup_daemon_logging():
@@ -126,6 +139,34 @@ def cmd_clipboard(args):
     except pyperclip.PyperclipException as e:
         print(f"Error accessing clipboard: {e}.")
 
+def cmd_history(args):
+    history = history_manager.load_history()
+    print(f"\n[CLIPBOARD HISTORY (Last {history_manager.MAX_HISTORY_SIZE} clips)]")
+    print("-" * 85)
+    if not history:
+        print("History is empty. Copy something to start tracking!")
+    else:
+        for i, content in enumerate(history):
+            #display content #, first 80 chars, +cleaning up new lines for cleaner output
+            display_content = content.replace("\n", "\\n").replace("\t", "\\t")
+            print(f"[{i:02d}] {display_content[:80]}{'...' if len(display_content) > 80 else ''}")
+    print("-"*85)
+
+    if args.set_index is not None:
+        if not history:
+            print("\n Cannot set: history is empty")
+            return
+        try:
+            index = int(args.set_index)
+            if 0<=index>len(history):
+                selected_content = history[index]
+                pyperclip.copy(selected_content)
+                history_manager.add_to_history(selected_content)
+                print(f"\n Item [{index:02d}] copied back to clipboard.")
+            else:
+                print(f"\n Invalid index: {index}. Must be between 0 and {len(history)} - 1")
+        except ValueError:
+            print(f"\nInvalid index format. Must be an int")
 
 def run_daemon_loop(config):
     if not config["secret_key"]:
@@ -159,6 +200,7 @@ def run_daemon_loop(config):
             #SYNCHRONIZATION LOGIC:
             if new_content and new_content != current_clipboard and new_content != last_synced_content:
                 logging.info(f"\n[LOCAL CHANGE]: copy detected '{new_content[:50]}{"..." if len(new_content) > 50 else ""}'")
+                history_manager.add_new_content(new_content)
 
                 for peer_ip in config['peer_ips']:
                     success = network_manager.send_data(
@@ -182,6 +224,8 @@ def run_daemon_loop(config):
                 config_manager.update_last_synced_content(received_content)
                 last_synced_content = received_content
                 current_clipboard = received_content
+
+                history_manager.add_new_content(new_content)
 
             current_clipboard = new_content
             time.sleep(0.1)
@@ -211,7 +255,7 @@ def cmd_start(args):
                   close_fds=True
                 )
             print(f"✅ ClipBridge Daemon launched in the background.")
-            print("Use 'python clipper.py status' to check its state and 'python clipper.py stop' to terminate it.")
+            print("Use 'python clipper.py status' to check its state, 'python clipper.py stop' to terminate it, and 'python clipper.py help' for commands.")
             return
         except Exception as e:
             print(f"Failed to launch daemon process in bg: {e}")
@@ -268,7 +312,7 @@ def main():
     #entry point for CLI
     parser = argparse.ArgumentParser(
         description = "Clipper: A universal terminal clipboard synchronization tool",
-        epilog = "Use 'python clipper.py <command> --help' for command-specific options"
+        epilog = "Use 'python clipper.py <command> --help or python clipper.py help' for command-specific options"
     )
 
     #subparsers for commands
@@ -284,6 +328,15 @@ def main():
     config_parser.add_argument("-p", "--port", dest = "set_port", type = int, default = None, help = "Set listening port for peer communication")
     config_parser.add_argument("-r", "--peers", dest = "set_peers", type = str, default = None, help = "Comma-separated list of peer IP adresses to send  clipboard content to e.g.(192.168.1.5,10.0.0.2)")
     config_parser.set_defaults(func = cmd_config)
+
+    #history
+    history_parser= subparsers.add_parser('history', help = 'Displays and manages clipboard history.')
+    history_parser.add_argument('-s', '--set', dest = 'set_index', type = int, default = None, help = 'Index of the history itemto copy back to the local clipboard')
+    history_parser.set_defaults(func = cmd_history)
+
+    #help
+    help_parser = subparsers.add_parser('help', help='Shows available commands')
+    help_parser.set_defaults(func = lambda args: parser.print_help())
 
     #status command parser
     status_parser = subparsers.add_parser("status", help = "Show current status of daemon and configuration.")
