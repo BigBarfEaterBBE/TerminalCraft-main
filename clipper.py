@@ -168,6 +168,27 @@ def cmd_history(args):
         except ValueError:
             print(f"\nInvalid index format. Must be an int")
 
+def cmd_sync(args):
+    config = config_manager.load_config()
+    target_ip = args.ip
+    listen_port = config['listen_port']
+
+    print(f"\nRequesting history from peer at {target_ip}:{listen_port}...")
+
+    success = network_manager.send_data(
+        ip_address = target_ip,
+        port=listen_port,
+        payload_type="HISTORY_REQUEST",
+        payload_data={
+            "max_clips":history_manager.MAX_HISTORY_SIZE
+        }
+    )
+
+    if success:
+        print(f"History request sent to {target_ip}.")
+    else:
+        print(f"Failed to send history requestion to {target_ip}.")
+
 def run_daemon_loop(config):
     if not config["secret_key"]:
         logging.error("Secret key is not configured. Run 'clipper config --key <SECRET>' first.")
@@ -175,6 +196,7 @@ def run_daemon_loop(config):
     
 
     listen_port = config['listen_port']
+    peer_ips = config['peer_ips']
     listener_socket = network_manager.start_listener('0.0.0.0', listen_port)
     if listener_socket is None:
         return
@@ -199,18 +221,17 @@ def run_daemon_loop(config):
             
             #SYNCHRONIZATION LOGIC:
             if new_content and new_content != current_clipboard:
-                # 1. ALWAYS add to history if the local clipboard has changed
                 history_manager.add_to_history(new_content)
                 logging.info(f"\n[LOCAL CHANGE]: Copy detected and saved to history: '{new_content[:50]}{'...' if len(new_content) > 50 else ''}'")
                 
-                # 2. Only proceed to network sync if content is different from the last synced content
                 if new_content != last_synced_content:
 
                     for peer_ip in config['peer_ips']:
                         success = network_manager.send_data(
                             ip_address=peer_ip,
                             port=listen_port,
-                            clipboard_data = new_content
+                            payload_type="CLIP_SYNC",
+                            payload_data = new_content
                         )
 
                         if success:
@@ -221,23 +242,47 @@ def run_daemon_loop(config):
                         else:
                             logging.warning(f"[NEWTORK]: Failed to send data to {peer_ip}:{listen_port}")
             
-            received_content = network_manager.receive_data(listener_socket)
-            if received_content is not None and received_content != last_synced_content:
-                logging.info(f"[NETWORK]: Incoming data received: '{received_content[:50]}{'...' if len(received_content) > 50 else ''}'")
-                pyperclip.copy(received_content)
-                config_manager.update_last_synced_content(received_content)
-                last_synced_content = received_content
-                current_clipboard = received_content
-
-                history_manager.add_new_content(new_content)
-
+            recieved_payload = network_manager.receive_data(listener_socket)
+            if recieved_payload:
+                p_type = recieved_payload.get('type')
+                p_data = recieved_payload.get('data')
+                if p_type == "CLIP_SYNC":
+                    if p_data is not None and p_data != last_synced_content:
+                        logging.info(f"[NETWORK]: Incoming CLIP_SYNC recieved")
+                        pyperclip.copy(p_data)
+                        config_manager.update_last_synced_content(p_data)
+                        last_synced_content=p_data
+                        current_clipboard=p_data
+                        history_manager.add_to_history(p_data)
+                elif p_type == "HISTORY_REQUEST":
+                    logging.info(f"[NETWORK]: Incoming HISTORY_REQUEST recieved.")
+                    local_history = history_manager.load_history()
+                    #NOTE: In real, send to specific requesting peer
+                    #simplified by sending to all known
+                    for peer_ip in peer_ips:
+                        network_manager.send_data(
+                            ip_address=peer_ip,
+                            port=listen_port,
+                            payload_type="HISTORY_RESPONSE",
+                            payload_data=local_history
+                        )
+                elif p_type == "HISTORY_RESPONSE":
+                    if isinstance(p_data,list):
+                        logging.info(f"[NETWORK]: Incoming HISTORY_RESPONSE recieved")
+                        history_manager.merge_history(p_data)
+                    else:
+                        logging.warning("[NETWORK]: Recieved HISTORY_RESPONSE with invalid data type")
+                else:
+                    logging.warning(f"[NETWORK]: Unknown command type recieved {p_type}.")
             current_clipboard = new_content
             time.sleep(0.1)
         except KeyboardInterrupt:
-            logging.info("\n Clipper daemon shutting down")
+            logging.info("\n Daemon shutting down...")
+            if listener_socket:
+                listener_socket.close()
             break
         except Exception as e:
-            logging.error(f"Unexpected error: {e}. Retrying in 5secs.")
+            logging.erro(f"Unexpected error: {e}. Retrying in 5secs")
             time.sleep(5)
 
 def cmd_start(args):
@@ -337,6 +382,11 @@ def main():
     history_parser= subparsers.add_parser('history', help = 'Displays and manages clipboard history.')
     history_parser.add_argument('-s', '--set', dest = 'set_index', type = int, default = None, help = 'Index of the history itemto copy back to the local clipboard')
     history_parser.set_defaults(func = cmd_history)
+
+    #sync
+    sync_parser = subparsers.add_parser('sync', help = 'Requests clipboard history from a specified peer IP')
+    sync_parser.add_argument('ip', type=str, help="The IP adrdress of the peer to request history from ")
+    sync_parser.set_defaults(func=cmd_sync)
 
     #help
     help_parser = subparsers.add_parser('help', help='Shows available commands')

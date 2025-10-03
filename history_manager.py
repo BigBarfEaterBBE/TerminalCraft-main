@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import logging
 HISTORY_FILE = 'clipper_history.json'
 MAX_HISTORY_SIZE = 20
 
@@ -40,3 +41,30 @@ def add_to_history(content):
     if len(history) > MAX_HISTORY_SIZE:
         history = history[:MAX_HISTORY_SIZE]
     save_history(history)
+
+def merge_history(remote_history):
+    if not isinstance(remote_history, list):
+        logging.error("Invalid history")
+        return
+    local_history = load_history()
+
+    local_set = set(local_history)
+    new_clips = []
+    for clip in remote_history:
+        if clip not in local_set:
+            new_clips.append(clip)
+    
+    updated_history = new_clips + local_history
+    final_history = []
+    seen=set()
+    for clip in updated_history:
+        if clip not in seen:
+            final_history.append(clip)
+            seen.add(clip)
+    
+    final_history = final_history[:MAX_HISTORY_SIZE]
+
+    save_history(final_history)
+    logging.info(f"History merged. Added {len(new_clips)} unique clips. Final size: {len(final_history)}")
+if not logging.getLogger().handlers:
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
