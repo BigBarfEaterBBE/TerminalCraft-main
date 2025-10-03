@@ -7,7 +7,7 @@ import importlib.util
 import logging
 from subprocess import Popen, DEVNULL
 
-# add cmd to show current clipboard
+#FIX HISTORY: CURRENTLY DOES NOT SHOW
 
 PID_FILE = '.clipper.pid'
 LOG_FILE = 'clipper.log'
@@ -198,24 +198,28 @@ def run_daemon_loop(config):
                 new_content = current_clipboard
             
             #SYNCHRONIZATION LOGIC:
-            if new_content and new_content != current_clipboard and new_content != last_synced_content:
-                logging.info(f"\n[LOCAL CHANGE]: copy detected '{new_content[:50]}{"..." if len(new_content) > 50 else ""}'")
-                history_manager.add_new_content(new_content)
+            if new_content and new_content != current_clipboard:
+                # 1. ALWAYS add to history if the local clipboard has changed
+                history_manager.add_to_history(new_content)
+                logging.info(f"\n[LOCAL CHANGE]: Copy detected and saved to history: '{new_content[:50]}{'...' if len(new_content) > 50 else ''}'")
+                
+                # 2. Only proceed to network sync if content is different from the last synced content
+                if new_content != last_synced_content:
 
-                for peer_ip in config['peer_ips']:
-                    success = network_manager.send_data(
-                        ip_address=peer_ip,
-                        port=listen_port,
-                        clipboard_data = new_content
-                    )
+                    for peer_ip in config['peer_ips']:
+                        success = network_manager.send_data(
+                            ip_address=peer_ip,
+                            port=listen_port,
+                            clipboard_data = new_content
+                        )
 
-                    if success:
-                        logging.info(f"[NETWORK]: Data sent to {peer_ip}:{listen_port}")
-                        config_manager.update_last_synced_content(new_content)
-                        last_synced_content = new_content
-                        break
-                    else:
-                        logging.warning(f"[NEWTORK]: Failed to send data to {peer_ip}:{listen_port}")
+                        if success:
+                            logging.info(f"[NETWORK]: Data sent to {peer_ip}:{listen_port}")
+                            config_manager.update_last_synced_content(new_content)
+                            last_synced_content = new_content
+                            break
+                        else:
+                            logging.warning(f"[NEWTORK]: Failed to send data to {peer_ip}:{listen_port}")
             
             received_content = network_manager.receive_data(listener_socket)
             if received_content is not None and received_content != last_synced_content:
