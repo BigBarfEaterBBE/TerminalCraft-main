@@ -225,6 +225,15 @@ def run_daemon_loop(config):
             
             #SYNCHRONIZATION LOGIC:
             if new_content and new_content != current_clipboard:
+                if len(new_content.encode('utf-8')) > network_manager.MAX_CLIP_SIZE:
+                    logging.warning(f"Clip ignored: Too large ({len(new_content)} bytes). Max is 1MB")
+                    current_clipboard = new_content #still update local but skip network sync
+                    continue
+                #type check
+                if not isinstance(new_content, str):
+                    logging.warning("Clip ignored: non-text data type")
+                    current_clipboard = new_content
+                    continue
                 history_manager.add_to_history(new_content)
                 logging.info(f"\n[LOCAL CHANGE]: Copy detected and saved to history: '{new_content[:50]}{'...' if len(new_content) > 50 else ''}'")
                 
@@ -345,7 +354,7 @@ def cmd_status(args):
             daemon_status = f"RUNNING (PID: {pid})"
         elif pid is not None:
             daemon_status = f"STALE PID FILE (PID: {pid}) - run clipper.py stop"
-            
+
     #2 configuration details
     secret_key = config.get("secret_key")
     if secret_key:
