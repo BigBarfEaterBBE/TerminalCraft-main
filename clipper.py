@@ -7,7 +7,11 @@ import importlib.util
 import logging
 from subprocess import Popen, DEVNULL
 
-#FIX HISTORY: CURRENTLY DOES NOT SHOW
+#WHEN PACKAGING:
+'''
+RUN:  install -r requirements.txt
+AND THEN: pyinstaller --onefile --hidden-import config_manager --hidden-import network_manager --hidden-import history_manager clipper.py
+'''
 
 PID_FILE = '.clipper.pid'
 LOG_FILE = 'clipper.log'
@@ -327,14 +331,76 @@ def cmd_start(args):
 
 
 def cmd_status(args):
+    config = config_manager.load_config()
+    daemon_status = "STOPPED"
+    pid = "N/A"
+    #1 check daemons tatus
+    if os.path.exists(PID_FILE):
+        try:
+            with open(PID_FILE, 'r') as f:
+                pid = int(f.read().strip())
+        except Exception as e:
+            daemon_status = "MALFORMED PID FILE"
+        if pid is not None and is_process_running(pid):
+            daemon_status = f"RUNNING (PID: {pid})"
+        elif pid is not None:
+            daemon_status = f"STALE PID FILE (PID: {pid}) - run clipper.py stop"
+            
+    #2 configuration details
+    secret_key = config.get("secret_key")
+    if secret_key:
+        key_display = f"Yes (Ends in: ...{secret_key[-3:]})"
+    else:
+        key_display = "NO KEY SET"
+    peers_display = ', '.join(config['peer_ips']) if config['peer_ips'] else 'None configured'
+    #3 last synced content
+    last_content = config.get("last_synced_content", "")
+    if last_content:
+        display_clip = last_content.replace('\n', '\\n')
+        display_clip = f"'{display_clip[:40]}{'...' if len(display_clip) > 40 else ''}'"
+    else:
+        display_clip = "N/A"
+
     #handles status cmd
     config = config_manager.load_config()
     print("\n---Clipper Status---")
-    print("Daemon Status: Stopped (run 'start' to launch)")
-    print(f"Config file:    {config_manager.CONFIG_FILE}")
-    print(f"Config port:    {config["listen_port"]}")
-    print(f"Secret Key Set: {'Yes' if config["secret_key"] else 'No'}")
-    print("-------------------------\n")
+    print(f"Daemon Status:  {daemon_status}")
+    print(f"Listening Port:    {config['listen_port']}")
+    print(f"Secret Key Set:    {key_display}")
+    print("------------------------------")
+    print(f"Configured Peers:   {peers_display}")
+    print(f"Last Synced Clip:   {display_clip}")
+    print(f"Config File:    {config_manager.CONFIG_FILE}")
+    print("------------------------------")
+
+#helper function for platform-independent PID tracking
+def is_process_running(pid):
+    if pid is None:
+        return False
+    if os.name == 'posix':
+        try:
+            os.kill(pid,0)
+            return True
+        except ProcessLookupError:
+            return False
+        except Exception:
+            return False
+    elif os.name == 'nt':
+        try:
+            import ctypes
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = ctypes.windll.kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+            )
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+                return True
+            else:
+                return False
+        except Exception:
+            return False
+    return False
+
 
 def cmd_stop(args):
     if not os.path.exists(PID_FILE):
@@ -394,7 +460,7 @@ def main():
 
     #status command parser
     status_parser = subparsers.add_parser("status", help = "Show current status of daemon and configuration.")
-    status_parser.set_defaults(func = cmd_config)
+    status_parser.set_defaults(func = cmd_status)
 
     #start parser
     start_parser = subparsers.add_parser("start", help = "Start backround sync")
