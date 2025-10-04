@@ -24,6 +24,11 @@ SEPARATOR = b"<CLIPPER_DELIMETER>"
 MAX_CLIP_SIZE = 1024*1024
 MAX_RECIEVE_BUFFER = MAX_CLIP_SIZE * 5
 
+#discover constants
+DISCOVERY_PORT = 55556
+DISCOVERY_MSG = "CLIPPER_PEER_QUERY_V1"
+
+
 
 #E2EE FUNCTIONS
 def derive_key(secret_key):
@@ -106,7 +111,7 @@ def receive_data(listener_socket):
         return None
     conn = None
     try:
-        conn, addr = listener_socket.accept()
+        conn, addr = listener_socket.accept() #addr is (ip, port)
         conn.settimeout(5)
         print(f"[NETWORK]: Incoming connection from {addr[0]}:{addr[1]}")
         recieved_stream = conn.recv(MAX_RECIEVE_BUFFER)
@@ -146,6 +151,7 @@ def receive_data(listener_socket):
             else:
                 payload['data'] = decrypted_data
             logging.info(f"[NETWORK] Successfully decrypted payload: {p_type}") 
+        payload['source_ip'] = addr[0]
         return payload
     except InvalidToken:
         logging.error(f"[NETWORK] Successfully decoded payload: {p_type}")
@@ -156,12 +162,41 @@ def receive_data(listener_socket):
     except socket.error as e:
         logging.warning(f"[NETWORK] Socket error during recieve: {e}")
         return None
+        
     except Exception as e:
         logging.error(f"[NETWORK] Unhandled error during data reception: {e}")
         return None
+        
     finally:
         if conn:
             conn.close()
+
+
+#LISTENING FUNCTIONS
+
+def start_discovery_listener(ip_address='0.0.0.0'):
+    #non-blocking UDP socket to listen for peer broadcasts
+    try:
+        disc_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        disc_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        disc_socket.bind((ip_address, DISCOVERY_PORT))
+        disc_socket.setblocking(False)
+        return disc_socket
+    except Exception as e:
+        logging.error(f"[DISCOVER] Could not start up UDP listener on port {DISCOVERY_PORT}: {e}")
+        return None
+
+def send_discovery_broadcast(listen_port):
+    #broadcast discovery msg to find peers on local network
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        payload = f"{DISCOVERY_MSG}:{listen_port}".encode('utf-8')
+        sock.sendto(payload, ('<broadcast', DISCOVERY_PORT))
+        sock.close()
+        #logging.debug("[DEBUG] Broadcast sent")
+    except Exception as e:
+        logging.warning(f"[DISCOVERY] Failed to send broadcast: {e}")
 
 def start_listener(ip_address,port):
     #non-blocking TCP socket to listen for incoming connections

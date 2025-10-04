@@ -6,6 +6,7 @@ import pyperclip
 import importlib.util
 import logging
 from subprocess import Popen, DEVNULL
+import select
 
 #WHEN PACKAGING:
 '''
@@ -202,8 +203,12 @@ def run_daemon_loop(config):
     listen_port = config['listen_port']
     peer_ips = config['peer_ips']
     listener_socket = network_manager.start_listener('0.0.0.0', listen_port)
-    if listener_socket is None:
+    discovery_socket = network_manager.start_discovery_listener()
+    if listener_socket is None or discovery_socket is None:
         return
+    dynamic_peers = set(config['peer_ips'])
+    last_broadcast_time = 0
+    BROADCAST_INTERVAL = 30
     
 
     logging.info(f"Clipper daemon starting on port {config["listen_port"]}...")
@@ -214,7 +219,11 @@ def run_daemon_loop(config):
     last_synced_content = config.get("last_synced_content", "")
     while True:
         try:
-            #clipboard monitoring
+            '''
+            
+            CLIPBOARD MONITORING
+
+            '''
             try:
                 #use pyperclip to read actual OS clipboard
                 new_content = pyperclip.paste()
@@ -222,8 +231,11 @@ def run_daemon_loop(config):
                 #case where clipboard is inaccessible
                 logging.warning(f"Could not access clipboard. {e}")
                 new_content = current_clipboard
+            '''
             
-            #SYNCHRONIZATION LOGIC:
+            SYNCHRONIZATION LOGIC
+            
+            '''
             if new_content and new_content != current_clipboard:
                 if len(new_content.encode('utf-8')) > network_manager.MAX_CLIP_SIZE:
                     logging.warning(f"Clip ignored: Too large ({len(new_content)} bytes). Max is 1MB")
@@ -239,7 +251,9 @@ def run_daemon_loop(config):
                 
                 if new_content != last_synced_content:
 
-                    for peer_ip in config['peer_ips']:
+                    for peer_ip in list(dynamic_peers):
+                        if peer_ip in ['127.0.0.1', '0.0.0.0']:
+                            continue
                         success = network_manager.send_data(
                             ip_address=peer_ip,
                             port=listen_port,
@@ -254,39 +268,75 @@ def run_daemon_loop(config):
                             break
                         else:
                             logging.warning(f"[NEWTORK]: Failed to send data to {peer_ip}:{listen_port}")
+            '''
             
-            recieved_payload = network_manager.receive_data(listener_socket)
-            if recieved_payload:
-                p_type = recieved_payload.get('type')
-                p_data = recieved_payload.get('data')
-                if p_type == "CLIP_SYNC":
-                    if p_data is not None and p_data != last_synced_content:
-                        logging.info(f"[NETWORK]: Incoming CLIP_SYNC recieved")
-                        pyperclip.copy(p_data)
-                        config_manager.update_last_synced_content(p_data)
-                        last_synced_content=p_data
-                        current_clipboard=p_data
-                        history_manager.add_to_history(p_data)
-                elif p_type == "HISTORY_REQUEST":
-                    logging.info(f"[NETWORK]: Incoming HISTORY_REQUEST recieved.")
-                    local_history = history_manager.load_history()
-                    #NOTE: In real, send to specific requesting peer
-                    #simplified by sending to all known
-                    for peer_ip in peer_ips:
-                        network_manager.send_data(
-                            ip_address=peer_ip,
-                            port=listen_port,
-                            payload_type="HISTORY_RESPONSE",
-                            payload_data=local_history
-                        )
-                elif p_type == "HISTORY_RESPONSE":
-                    if isinstance(p_data,list):
-                        logging.info(f"[NETWORK]: Incoming HISTORY_RESPONSE recieved")
-                        history_manager.merge_history(p_data)
-                    else:
-                        logging.warning("[NETWORK]: Recieved HISTORY_RESPONSE with invalid data type")
-                else:
-                    logging.warning(f"[NETWORK]: Unknown command type recieved {p_type}.")
+            PEER DISCOVERY + INCOMING NETWORK ACTIVITY
+
+            '''
+            if time.time() - last_broadcast_time > BROADCAST_INTERVAL:
+                network_manager.send_dicovery_broadcast(listen_port)
+                last_broadcast_time = time.time()
+            ready_to_read, _, _ = select.select([listener_socket, discovery_socket], [], [], 0)
+            for sock in ready_to_read:
+                if sock == discovery_socket:
+                    #recieve UDP discovery packet
+                    try:
+                        data, addr = discovery_socket.recvfrom(1024)
+                        message = data.decode('utf-8')
+                        peer_ip = addr[0]
+                        if network_manager.DISCOVERY_MESSAGE in message and peer_ip != '127.0.0.1':
+                            #split msg to get peer listen port
+                            try:
+                                _, peer_listen_port = message.split(':')
+                                peer_listen_port = int(peer_listen_port)
+                            except:
+                                peer_listen_port = listen_port #assume same port if not specified
+                            if peer_ip not in dynamic_peers:
+                                dynamic_peers.add(peer_ip)
+                                logging.info(f"[DISCOVERY] Found new peer: {peer_ip}. Added for sync.")
+                                network_manager.send_data(peer_ip, listen_port, "HISTORY_REQUEST", {"max_clips": history_manager.MAX_HISTORY_SIZE})
+                    except Exception as e:
+                        logging.warning(f"[DISCOVERY] Error recieving UDP: {e}")
+                    pass
+                elif sock == listener_socket:
+                    recieved_payload = network_manager.receive_data(listener_socket)
+                    if recieved_payload:
+                        p_type = recieved_payload.get('type')
+                        p_data = recieved_payload.get('data')
+                        if p_type == "CLIP_SYNC":
+                            if p_data is not None and p_data != last_synced_content:
+                                logging.info(f"[NETWORK]: Incoming CLIP_SYNC recieved")
+                                pyperclip.copy(p_data)
+                                config_manager.update_last_synced_content(p_data)
+                                last_synced_content=p_data
+                                current_clipboard=p_data
+                                history_manager.add_to_history(p_data)
+                        elif p_type == "HISTORY_REQUEST":
+                            requesting_peer_ip = recieved_payload.get('source_ip')
+                            if requesting_peer_ip:
+
+                                logging.info(f"[NETWORK]: Incoming HISTORY_REQUEST recieved from {requesting_peer_ip}.")
+                                local_history = history_manager.load_history()
+                                network_manager.send_data(
+                                    ip_address = requesting_peer_ip,
+                                    port = listen_port,
+                                    payload_type = "HISTORY_RESPONSE",
+                                    payload_data = local_history
+                                )
+                                logging.info(f"[NETWORK] History response sent to {requesting_peer_ip}")
+                            else:
+                                logging.warning(f"[NETWORK] Recieved HISTORY_REQUEST but could not determine source IP.")
+                        elif p_type == "HISTORY_RESPONSE":
+                            if isinstance(p_data,list):
+                                logging.info(f"[NETWORK]: Incoming HISTORY_RESPONSE recieved")
+                                history_manager.merge_history(p_data)
+                            else:
+                                logging.warning("[NETWORK]: Recieved HISTORY_RESPONSE with invalid data type")
+                        else:
+                            logging.warning(f"[NETWORK]: Unknown command type recieved {p_type}.")
+
+
+
             current_clipboard = new_content
             time.sleep(0.1)
         except KeyboardInterrupt:
@@ -297,6 +347,11 @@ def run_daemon_loop(config):
         except Exception as e:
             logging.erro(f"Unexpected error: {e}. Retrying in 5secs")
             time.sleep(5)
+        finally:
+            if listener_socket:
+                listener_socket.close()
+            if discovery_socket:
+                discovery_socket.close()
 
 def cmd_start(args):
     if os.path.exists(PID_FILE):
