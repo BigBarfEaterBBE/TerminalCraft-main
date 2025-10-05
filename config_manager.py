@@ -62,3 +62,20 @@ def update_last_synced_content(content):
     config = load_config()
     config["last_synced_content"] = content
     return save_config(config)
+
+def add_peer(ip_address):
+    config = load_config()
+    if ip_address not in config['peer_ips']:
+        config['peer_ips'].append('peer_ips')
+        if save_config(config):
+            return True, f"Peer {ip_address} added to static list"
+    return False, f"Peer {ip_address} is already in the static list"
+
+def remove_peer(ip_address):
+    config = load_config()
+    try:
+        config['peer_ips'].remove(ip_address)
+        if save_config(config):
+            return True, f"Peer {ip_address} removed from static list"
+    except ValueError:
+        return False, f"Peer {ip_address} not found in the static list"

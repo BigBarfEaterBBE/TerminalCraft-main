@@ -194,6 +194,31 @@ def cmd_sync(args):
     else:
         print(f"Failed to send history requestion to {target_ip}.")
 
+def cmd_peer(args):
+    if args.peer_command == "list":
+        config = config_manager.load_config()
+        print("\n--- Static Configured Peers ---")
+        if config['peer_ips']:
+            for i, ip in enumerate(config['peer_ips']):
+                print(f"[{i:02d}] {ip}")
+        else:
+            print("No static peers configured")
+        
+    elif args.peer_command == "add":
+        ip = args.ip.strip()
+        success, message = config_manager.add_peer(ip)
+        print(message)
+        if success:
+            print("Restart the daemon for changes to take full effect") #TODO MAKE IT SO IT AUTOMATICALLT RESTARTS
+    elif args.peer_command == "remove":
+        ip = args.ip.strip()
+        success, message = config_manager.remove_peer(ip)
+        print(message)
+        if success:
+            print("Restart the daemon for changes to take full effect")
+
+
+
 def run_daemon_loop(config):
     if not config["secret_key"]:
         logging.error("Secret key is not configured. Run 'clipper config --key <SECRET>' first.")
@@ -534,6 +559,19 @@ def main():
     #stop command parser
     stop_parser = subparsers.add_parser("stop", help = "Stop running Clipper daemon")
     stop_parser.set_defaults(func = cmd_stop)
+
+    #peer command parser
+    peer_parser = subparsers.add_parser("peer", help = "Manages static peer list")
+    peer_subparsers = peer_parser.add_subparsers(dest="peer_command", required = True)
+    peer_list_parser = peer_subparsers.add_parser('list', help ='Displays current static peers')
+    peer_list_parser.set_defaults(func = cmd_peer)
+    peer_add_parser = peer_subparsers.add_parser('add', help='Adds a peer IP to the static peers list')
+    peer_add_parser.add_argument('ip', type=str, help = "IP address to add")
+    peer_add_parser.set_defaults(func = cmd_peer)
+    peer_remove_parser = peer_subparsers.add_parser('remove', help="Remove a peer IP from the static peers list")
+    peer_remove_parser.add_argument('ip', type=str, help ="IP address to remove")
+    peer_remove_parser.set_defaults(func = cmd_peer)
+
 
     #parse arguments and run function associated with command
     args = parser.parse_args()

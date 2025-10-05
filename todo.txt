@@ -1,1 +1,5 @@
-1. peer discover + auto sync
+1. add manual peer management command
+2. improve discovery response logic efficiency
+3. support non-text clipboard data
+4. command to clear history
+5. add more error handling/reconnection for the sync function
